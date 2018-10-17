@@ -4,19 +4,22 @@ GEM
     archive-tar-minitar (0.5.2)
     arr-pm (0.0.10)
       cabin (> 0)
-    aws-sdk (1.66.0)
-      aws-sdk-v1 (= 1.66.0)
-    aws-sdk-v1 (1.66.0)
-      json (~> 1.4)
-      nokogiri (>= 1.4.4)
+    aws-sdk (2.11.151)
+      aws-sdk-resources (= 2.11.151)
+    aws-sdk-core (2.11.151)
+      aws-sigv4 (~> 1.0)
+      jmespath (~> 1.0)
+    aws-sdk-resources (2.11.151)
+      aws-sdk-core (= 2.11.151)
+    aws-sigv4 (1.0.3)
     backports (3.6.8)
     cabin (0.8.1)
     childprocess (0.5.9)
       ffi (~> 1.0, >= 1.0.11)
     clamp (0.6.5)
     corefines (1.9.0)
-    deb-s3 (0.8.0)
-      aws-sdk (~> 1.66)
+    deb-s3 (0.10.0)
+      aws-sdk (~> 2)
       thor (~> 0.19.0)
     ffi (1.9.10)
     fpm (1.5.0)
@@ -31,21 +34,19 @@ GEM
       json (>= 1.7.7)
       ruby-xz
     io-like (0.3.0)
-    json (1.8.3)
-    mini_portile2 (2.0.0)
-    nokogiri (1.6.7.2)
-      mini_portile2 (~> 2.0.0.rc2)
+    jmespath (1.4.0)
+    json (2.1.0)
     ruby-xz (0.2.3)
       ffi (~> 1.9)
       io-like (~> 0.3)
-    thor (0.19.1)
+    thor (0.19.4)
 
 PLATFORMS
   ruby
 
 DEPENDENCIES
-  deb-s3
+  deb-s3 (>= 0.8.0)
   fpm
 
 BUNDLED WITH
-   1.12.1
+   1.16.6
