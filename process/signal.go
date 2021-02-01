@@ -3,7 +3,10 @@
 package process
 
 import (
+	"fmt"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func (p *Process) setupProcessGroup() {
@@ -14,6 +17,11 @@ func (p *Process) setupProcessGroup() {
 			Pgid:    0,
 		}
 	}
+}
+
+func (p *Process) postStart() error {
+	// a no-op on non-windows
+	return nil
 }
 
 func (p *Process) terminateProcessGroup() error {
@@ -35,4 +43,14 @@ func (p *Process) interruptProcessGroup() error {
 
 func GetPgid(pid int) (int, error) {
 	return syscall.Getpgid(pid)
+}
+
+// SignalString returns the name of the given signal.
+// e.g. SignalString(syscall.Signal(15)) // "SIGTERM"
+func SignalString(s syscall.Signal) string {
+	name := unix.SignalName(s)
+	if name == "" {
+		return fmt.Sprintf("%d", int(s))
+	}
+	return name
 }

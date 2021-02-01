@@ -1,19 +1,25 @@
 package clicommand
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/buildkite/agent/v3/agent"
 	"github.com/buildkite/agent/v3/api"
+	"github.com/buildkite/agent/v3/bootstrap/shell"
 	"github.com/buildkite/agent/v3/cliconfig"
 	"github.com/buildkite/agent/v3/experiments"
+	"github.com/buildkite/agent/v3/hook"
 	"github.com/buildkite/agent/v3/logger"
 	"github.com/buildkite/agent/v3/metrics"
 	"github.com/buildkite/agent/v3/process"
@@ -48,6 +54,7 @@ type AgentStartConfig struct {
 	Config                     string   `cli:"config"`
 	Name                       string   `cli:"name"`
 	Priority                   string   `cli:"priority"`
+	AcquireJob                 string   `cli:"acquire-job"`
 	DisconnectAfterJob         bool     `cli:"disconnect-after-job"`
 	DisconnectAfterIdleTimeout int      `cli:"disconnect-after-idle-timeout"`
 	BootstrapScript            string   `cli:"bootstrap-script" normalize:"commandpath"`
@@ -83,6 +90,7 @@ type AgentStartConfig struct {
 	HealthCheckAddr            string   `cli:"health-check-addr"`
 	MetricsDatadog             bool     `cli:"metrics-datadog"`
 	MetricsDatadogHost         string   `cli:"metrics-datadog-host"`
+	TracingBackend             string   `cli:"tracing-backend"`
 	Spawn                      int      `cli:"spawn"`
 	LogFormat                  string   `cli:"log-format"`
 	CancelSignal               string   `cli:"cancel-signal"`
@@ -124,7 +132,7 @@ func DefaultShell() string {
 }
 
 func DefaultConfigFilePaths() (paths []string) {
-	// Toggle beetwen windows an *nix paths
+	// Toggle beetwen windows and *nix paths
 	if runtime.GOOS == "windows" {
 		paths = []string{
 			"C:\\buildkite-agent\\buildkite-agent.cfg",
@@ -134,9 +142,14 @@ func DefaultConfigFilePaths() (paths []string) {
 	} else {
 		paths = []string{
 			"$HOME/.buildkite-agent/buildkite-agent.cfg",
-			"/usr/local/etc/buildkite-agent/buildkite-agent.cfg",
-			"/etc/buildkite-agent/buildkite-agent.cfg",
 		}
+
+		// For Apple Silicon Macs, prioritise the `/opt/homebrew` path over `/usr/local`
+		if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+			paths = append(paths, "/opt/homebrew/etc/buildkite-agent/buildkite-agent.cfg")
+		}
+
+		paths = append(paths, "/usr/local/etc/buildkite-agent/buildkite-agent.cfg", "/etc/buildkite-agent/buildkite-agent.cfg")
 	}
 
 	// Also check to see if there's a buildkite-agent.cfg in the folder
@@ -148,6 +161,14 @@ func DefaultConfigFilePaths() (paths []string) {
 	}
 
 	return
+}
+
+// validTracingBackends is a list of valid backends for tracing. This is sanity
+// checked during agent startup so that bootstrapped jobs don't silently have
+// no tracing if an invalid value is given.
+var validTracingBackends = map[string]struct{}{
+	"":        struct{}{},
+	"datadog": struct{}{},
 }
 
 var AgentStartCommand = cli.Command{
@@ -173,6 +194,12 @@ var AgentStartCommand = cli.Command{
 			Usage:  "The priority of the agent (higher priorities are assigned work first)",
 			EnvVar: "BUILDKITE_AGENT_PRIORITY",
 		},
+		cli.StringFlag{
+			Name:   "acquire-job",
+			Value:  "",
+			Usage:  "Start this agent and only run the specified job, disconnecting after it's finished",
+			EnvVar: "BUILDKITE_AGENT_ACQUIRE_JOB",
+		},
 		cli.BoolFlag{
 			Name:   "disconnect-after-job",
 			Usage:  "Disconnect the agent after running a job",
@@ -193,7 +220,7 @@ var AgentStartCommand = cli.Command{
 		cli.StringFlag{
 			Name:   "shell",
 			Value:  DefaultShell(),
-			Usage:  "The shell commamnd used to interpret build commands, e.g /bin/bash -e -c",
+			Usage:  "The shell command used to interpret build commands, e.g /bin/bash -e -c",
 			EnvVar: "BUILDKITE_SHELL",
 		},
 		cli.StringSliceFlag{
@@ -273,7 +300,7 @@ var AgentStartCommand = cli.Command{
 		},
 		cli.StringFlag{
 			Name:   "git-clone-mirror-flags",
-			Value:  "-v --mirror",
+			Value:  "-v",
 			Usage:  "Flags to pass to the \"git clone\" command when used for mirroring",
 			EnvVar: "BUILDKITE_GIT_CLONE_MIRROR_FLAGS",
 		},
@@ -393,6 +420,12 @@ var AgentStartCommand = cli.Command{
 			EnvVar: "BUILDKITE_REDACTED_VARS",
 			Value:  &cli.StringSlice{"*_PASSWORD", "*_SECRET", "*_TOKEN"},
 		},
+		cli.StringFlag{
+			Name:   "tracing-backend",
+			Usage:  "The name of the tracing backend to use.",
+			EnvVar: "BUILDKITE_TRACING_BACKEND",
+			Value:  "",
+		},
 
 		// API Flags
 		AgentRegisterTokenFlag,
@@ -401,9 +434,9 @@ var AgentStartCommand = cli.Command{
 		DebugHTTPFlag,
 
 		// Global flags
-		ExperimentsFlag,
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
 
 		// Deprecated flags which will be removed in v4
@@ -481,7 +514,11 @@ var AgentStartCommand = cli.Command{
 		defer done()
 
 		// Remove any config env from the environment to prevent them propagating to bootstrap
-		UnsetConfigFromEnvironment(c)
+		err = UnsetConfigFromEnvironment(c)
+		if err != nil {
+			fmt.Printf("%s", err)
+			os.Exit(1)
+		}
 
 		// Check if git-mirrors are enabled
 		if experiments.IsEnabled(`git-mirrors`) {
@@ -554,6 +591,11 @@ var AgentStartCommand = cli.Command{
 			DatadogHost: cfg.MetricsDatadogHost,
 		})
 
+		// Sanity check supported tracing backends
+		if _, has := validTracingBackends[cfg.TracingBackend]; !has {
+			l.Fatal("The given tracing backend is not supported: %s", cfg.TracingBackend)
+		}
+
 		// AgentConfiguration is the runtime configuration for an agent
 		agentConf := agent.AgentConfiguration{
 			BootstrapScript:            cfg.BootstrapScript,
@@ -579,6 +621,8 @@ var AgentStartCommand = cli.Command{
 			CancelGracePeriod:          cfg.CancelGracePeriod,
 			Shell:                      cfg.Shell,
 			RedactedVars:               cfg.RedactedVars,
+			AcquireJob:                 cfg.AcquireJob,
+			TracingBackend:             cfg.TracingBackend,
 		}
 
 		if loader.File != nil {
@@ -588,14 +632,14 @@ var AgentStartCommand = cli.Command{
 		if cfg.LogFormat == `text` {
 			welcomeMessage :=
 				"\n" +
-					"%s  _           _ _     _ _    _ _                                _\n" +
-					" | |         (_) |   | | |  (_) |                              | |\n" +
-					" | |__  _   _ _| | __| | | ___| |_ ___    __ _  __ _  ___ _ __ | |_\n" +
-					" | '_ \\| | | | | |/ _` | |/ / | __/ _ \\  / _` |/ _` |/ _ \\ '_ \\| __|\n" +
-					" | |_) | |_| | | | (_| |   <| | ||  __/ | (_| | (_| |  __/ | | | |_\n" +
-					" |_.__/ \\__,_|_|_|\\__,_|_|\\_\\_|\\__\\___|  \\__,_|\\__, |\\___|_| |_|\\__|\n" +
-					"                                                __/ |\n" +
-					" http://buildkite.com/agent                    |___/\n%s\n"
+					"%s   _           _ _     _ _    _ _                                _\n" +
+					"  | |         (_) |   | | |  (_) |                              | |\n" +
+					"  | |__  _   _ _| | __| | | ___| |_ ___    __ _  __ _  ___ _ __ | |_\n" +
+					"  | '_ \\| | | | | |/ _` | |/ / | __/ _ \\  / _` |/ _` |/ _ \\ '_ \\| __|\n" +
+					"  | |_) | |_| | | | (_| |   <| | ||  __/ | (_| | (_| |  __/ | | | |_\n" +
+					"  |_.__/ \\__,_|_|_|\\__,_|_|\\_\\_|\\__\\___|  \\__,_|\\__, |\\___|_| |_|\\__|\n" +
+					"                                                 __/ |\n" +
+					" https://buildkite.com/agent                    |___/\n%s\n"
 
 			if !cfg.NoColor {
 				fmt.Fprintf(os.Stderr, welcomeMessage, "\x1b[38;5;48m", "\x1b[0m")
@@ -666,6 +710,16 @@ var AgentStartCommand = cli.Command{
 				WaitForEC2TagsTimeout:    ec2TagTimeout,
 				WaitForGCPLabelsTimeout:  gcpLabelsTimeout,
 			}),
+			// We only want this agent to be ingored in Buildkite
+			// dispatches if it's being booted to acquire a
+			// specific job.
+			IgnoreInDispatches: cfg.AcquireJob != "",
+		}
+
+		// Spawning multiple agents doesn't work if the agent is being
+		// booted in acquisition mode
+		if cfg.Spawn > 1 && cfg.AcquireJob != "" {
+			l.Fatal("You can't spawn multiple agents and acquire a job at the same time")
 		}
 
 		var workers []*agent.AgentWorker
@@ -690,12 +744,16 @@ var AgentStartCommand = cli.Command{
 						AgentConfiguration: agentConf,
 						CancelSignal:       cancelSig,
 						Debug:              cfg.Debug,
+						DebugHTTP:          cfg.DebugHTTP,
 						SpawnIndex:         i,
 					}))
 		}
 
 		// Setup the agent pool that spawns agent workers
 		pool := agent.NewAgentPool(workers)
+
+		// Agent-wide shutdown hook. Once per agent, for all workers on the agent.
+		defer agentShutdownHook(l, cfg)
 
 		// Handle process signals
 		signals := handlePoolSignals(l, pool)
@@ -765,4 +823,48 @@ func handlePoolSignals(l logger.Logger, pool *agent.AgentPool) chan os.Signal {
 	}()
 
 	return signals
+}
+
+// agentShutdownHook looks for an agent-shutdown hook script in the hooks path
+// and executes it if found. Output (stdout + stderr) is streamed into the main
+// agent logger. Exit status failure is logged but ignored.
+func agentShutdownHook(log logger.Logger, cfg AgentStartConfig) {
+	// search for agent-shutdown hook (including .bat & .ps1 files on Windows)
+	p, err := hook.Find(cfg.HooksPath, "agent-shutdown")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Error("Error finding agent-shutdown hook: %v", err)
+		}
+		return
+	}
+	sh, err := shell.New()
+	if err != nil {
+		log.Error("creating shell for agent-shutdown hook: %v", err)
+		return
+	}
+
+	// pipe from hook output to logger
+	r, w := io.Pipe()
+	sh.Logger = &shell.WriterLogger{Writer: w, Ansi: !cfg.NoColor} // for Promptf
+	sh.Writer = w                                                  // for stdout+stderr
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		scan := bufio.NewScanner(r) // log each line separately
+		log = log.WithFields(logger.StringField("hook", "agent-shutdown"))
+		for scan.Scan() {
+			log.Info(scan.Text())
+		}
+	}()
+
+	// run agent-shutdown hook
+	sh.Promptf("%s", p)
+	if err = sh.RunScript(context.Background(), p, nil); err != nil {
+		log.Error("agent-shutdown hook: %v", err)
+	}
+	w.Close() // goroutine scans until pipe is closed
+
+	// wait for hook to finish and output to flush to logger
+	wg.Wait()
 }

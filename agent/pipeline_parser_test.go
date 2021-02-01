@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/agent/v3/env"
+	"github.com/buildkite/yaml"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -286,4 +287,62 @@ steps:
 
 	expected := `{"steps":[{"name":":s3: xxx","command":"script/buildkite/xxx.sh","plugins":{"xxx/aws-assume-role#v0.1.0":{"role":"arn:aws:iam::xxx:role/xxx"},"ecr#v1.1.4":{"login":true,"account_ids":"xxx","registry_region":"us-east-1"},"docker-compose#v2.5.1":{"run":"xxx","config":".buildkite/docker/docker-compose.yml","env":["AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN"]}},"agents":{"queue":"xxx"}}]}`
 	assert.Equal(t, expected, strings.TrimSpace(buf.String()))
+}
+
+func TestPipelineParserParsesConditionalWithEndOfLineAnchorDollarSign(t *testing.T) {
+	for _, row := range []struct {
+		noInterpolation bool
+		pipeline        string
+	}{
+		// dollar sign must be escaped when interpolation is in effect
+		{false, "steps:\n  - if: build.env(\"ACCOUNT\") =~ /^(foo|bar)\\$/"},
+		{true, "steps:\n  - if: build.env(\"ACCOUNT\") =~ /^(foo|bar)$/"},
+	} {
+		result, err := PipelineParser{
+			Pipeline:        []byte(row.pipeline),
+			NoInterpolation: row.noInterpolation,
+			Env:             env.New(),
+		}.Parse()
+		assert.NoError(t, err)
+		j, _ := json.Marshal(result)
+		assert.Equal(t, `{"steps":[{"if":"build.env(\"ACCOUNT\") =~ /^(foo|bar)$/"}]}`, string(j))
+	}
+}
+
+func TestPipelinePropagatesTracingDataIfAvailable(t *testing.T) {
+	e := env.New()
+	e.Set("BUILDKITE_TRACE_CONTEXT", "123")
+	for _, row := range []struct {
+		hasExistingEnv bool
+		expected       string
+	}{
+		{false, `{"steps":[{"command":"echo asd"}],"env":{"BUILDKITE_TRACE_CONTEXT":"123"}}`},
+		{true, `{"steps":[{"command":"echo asd"}],"env":{"ASD":1,"BUILDKITE_TRACE_CONTEXT":"123"}}`},
+	} {
+		pipelineYaml := "steps:\n  - command: echo asd\n"
+		if row.hasExistingEnv {
+			pipelineYaml += "env:\n  ASD: 1"
+		}
+		result, err := PipelineParser{
+			Pipeline: []byte(pipelineYaml),
+			Env:      e,
+		}.Parse()
+		assert.NoError(t, err)
+		j, _ := json.Marshal(result)
+		assert.Equal(t, row.expected, string(j))
+	}
+}
+
+func TestUpsertSliceItem(t *testing.T) {
+	y := yaml.MapSlice{
+		{Key: "a", Value: "b"},
+	}
+
+	y = upsertSliceItem("a", y, "c")
+	assert.Len(t, y, 1)
+	assert.Equal(t, y[0], yaml.MapItem{Key: "a", Value: "c"})
+
+	y = upsertSliceItem("b", y, 1)
+	assert.Len(t, y, 2)
+	assert.Equal(t, y[1], yaml.MapItem{Key: "b", Value: 1})
 }

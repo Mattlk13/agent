@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"time"
+
 	"github.com/buildkite/agent/v3/api"
 	"github.com/buildkite/agent/v3/logger"
+	"github.com/buildkite/agent/v3/retry"
 )
 
 type ArtifactSearcher struct {
@@ -24,18 +27,26 @@ func NewArtifactSearcher(l logger.Logger, ac APIClient, buildID string) *Artifac
 	}
 }
 
-func (a *ArtifactSearcher) Search(query string, scope string, includeRetriedJobs bool) ([]*api.Artifact, error) {
+func (a *ArtifactSearcher) Search(query string, scope string, includeRetriedJobs bool, includeDuplicates bool) ([]*api.Artifact, error) {
 	if scope == "" {
 		a.logger.Info("Searching for artifacts: \"%s\"", query)
 	} else {
 		a.logger.Info("Searching for artifacts: \"%s\" within step: \"%s\"", query, scope)
 	}
 
-	artifacts, _, err := a.apiClient.SearchArtifacts(a.buildID, &api.ArtifactSearchOptions{
-		Query:              query,
-		Scope:              scope,
-		IncludeRetriedJobs: includeRetriedJobs,
-	})
+	var artifacts []*api.Artifact
+
+	// Retry on transport errors, a failed search will return 0 artifacts
+	err := retry.Do(func(s *retry.Stats) error {
+		var searchErr error
+		artifacts, _, searchErr = a.apiClient.SearchArtifacts(a.buildID, &api.ArtifactSearchOptions{
+			Query:              query,
+			Scope:              scope,
+			IncludeRetriedJobs: includeRetriedJobs,
+			IncludeDuplicates:  includeDuplicates,
+		})
+		return searchErr
+	}, &retry.Config{Maximum: 10, Interval: 5 * time.Second})
 
 	return artifacts, err
 }

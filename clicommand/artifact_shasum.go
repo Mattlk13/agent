@@ -27,7 +27,7 @@ Example:
    $ buildkite-agent artifact shasum "pkg/release.tar.gz" --build xxx
 
    This will search for all the files in the build with the path "pkg/release.tar.gz" and will
-   print to STDOUT it's SHA-1 checksum.
+   print the SHA-1 checksum of each one to STDOUT.
 
    If you would like to target artifacts from a specific build step, you can do
    so by using the --step argument.
@@ -43,9 +43,10 @@ type ArtifactShasumConfig struct {
 	IncludeRetriedJobs bool   `cli:"include-retried-jobs"`
 
 	// Global flags
-	Debug   bool   `cli:"debug"`
-	NoColor bool   `cli:"no-color"`
-	Profile string `cli:"profile"`
+	Debug       bool     `cli:"debug"`
+	NoColor     bool     `cli:"no-color"`
+	Experiments []string `cli:"experiment" normalize:"list"`
+	Profile     string   `cli:"profile"`
 
 	// API config
 	DebugHTTP        bool   `cli:"debug-http"`
@@ -62,7 +63,7 @@ var ArtifactShasumCommand = cli.Command{
 		cli.StringFlag{
 			Name:  "step",
 			Value: "",
-			Usage: "Scope the search to a particular step by using either it's name of job ID",
+			Usage: "Scope the search to a particular step by using either its name of job ID",
 		},
 		cli.StringFlag{
 			Name:   "build",
@@ -85,6 +86,7 @@ var ArtifactShasumCommand = cli.Command{
 		// Global flags
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
 	},
 	Action: func(c *cli.Context) {
@@ -108,7 +110,7 @@ var ArtifactShasumCommand = cli.Command{
 		// Find the artifact we want to show the SHASUM for
 		searcher := agent.NewArtifactSearcher(l, client, cfg.Build)
 
-		artifacts, err := searcher.Search(cfg.Query, cfg.Step, cfg.IncludeRetriedJobs)
+		artifacts, err := searcher.Search(cfg.Query, cfg.Step, cfg.IncludeRetriedJobs, false)
 		if err != nil {
 			l.Fatal("Failed to find artifacts: %s", err)
 		}

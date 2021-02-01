@@ -20,6 +20,26 @@ import (
 	"github.com/buildkite/shellwords"
 )
 
+const (
+	// BuildkiteMessageMax is the maximum length of "BUILDKITE_MESSAGE=...\0"
+	// environment entry passed to bootstrap, beyond which it will be truncated
+	// to avoid exceeding the system limit. Note that it includes the variable
+	// name, equals sign, and null terminator.
+	//
+	// The true limit varies by system and may be shared with other env/argv
+	// data. We'll settle on an arbitrary generous but reasonable value, and
+	// adjust it if issues arise.
+	//
+	// macOS 10.15:    256 KiB shared by environment & argv
+	// Linux 4.19:     128 KiB per k=v env
+	// Windows 10:  16,384 KiB shared
+	// POSIX:            4 KiB minimum shared
+	BuildkiteMessageMax = 64 * 1024
+
+	// BuildkiteMessageName is the env var name of the build/commit message.
+	BuildkiteMessageName = "BUILDKITE_MESSAGE"
+)
+
 type JobRunnerConfig struct {
 	// The configuration of the agent from the CLI
 	AgentConfiguration AgentConfiguration
@@ -29,6 +49,9 @@ type JobRunnerConfig struct {
 
 	// Whether to set debug in the job
 	Debug bool
+
+	// Whether to set debug HTTP Requests in the job
+	DebugHTTP bool
 }
 
 type JobRunner struct {
@@ -68,6 +91,9 @@ type JobRunner struct {
 
 	// If the job is being cancelled
 	cancelled bool
+
+	// If the agent is being stopped
+	stopped bool
 
 	// Used to wait on various routines that we spin up
 	routineWaitGroup sync.WaitGroup
@@ -240,13 +266,36 @@ func (r *JobRunner) Run() error {
 		return err
 	}
 
+	// Default exit status is no exit status
+	exitStatus := ""
+	signal := ""
+	signalReason := ""
+
 	// Run the process. This will block until it finishes.
 	if err := r.process.Run(); err != nil {
 		// Send the error as output
 		r.logStreamer.Process(fmt.Sprintf("%s", err))
+
+		// The process did not run at all, so make sure it fails
+		exitStatus = "-1"
+		signalReason = "process_run_error"
 	} else {
 		// Add the final output to the streamer
 		r.logStreamer.Process(r.output.String())
+
+		// Collect the finished process' exit status
+		exitStatus = fmt.Sprintf("%d", r.process.WaitStatus().ExitStatus())
+		if ws := r.process.WaitStatus(); ws.Signaled() {
+			signal = process.SignalString(ws.Signal())
+		}
+		if r.stopped {
+			// The agent is being gracefully stopped, and we signaled the job to end. Often due
+			// to pending host shutdown or EC2 spot instance termination
+			signalReason = `agent_stop`
+		} else if r.cancelled {
+			// The job was signaled because it was cancelled via the buildkite web UI
+			signalReason = `cancel`
+		}
 	}
 
 	// Store the finished at time
@@ -278,13 +327,10 @@ func (r *JobRunner) Run() error {
 		r.logger.Debug("[JobRunner] Deleted env file: %s", r.envFile.Name())
 	}
 
-	exitStatus := fmt.Sprintf("%d", r.process.WaitStatus().ExitStatus())
-
+	// Write some metrics about the job run
 	jobMetrics := r.metrics.With(metrics.Tags{
 		"exit_code": exitStatus,
 	})
-
-	// Write some metrics about the job run
 	if exitStatus == "0" {
 		jobMetrics.Timing(`jobs.duration.success`, finishedAt.Sub(startedAt))
 		jobMetrics.Count(`jobs.success`, 1)
@@ -297,11 +343,18 @@ func (r *JobRunner) Run() error {
 	//
 	// Once we tell the API we're finished it might assign us new work, so make
 	// sure everything else is done first.
-	r.finishJob(finishedAt, exitStatus, r.logStreamer.FailedChunks())
+	r.finishJob(finishedAt, exitStatus, signal, signalReason, r.logStreamer.FailedChunks())
 
 	r.logger.Info("Finished job %s", r.job.ID)
 
 	return nil
+}
+
+func (r *JobRunner) CancelAndStop() error {
+	r.cancelLock.Lock()
+	r.stopped = true
+	r.cancelLock.Unlock()
+	return r.Cancel()
 }
 
 func (r *JobRunner) Cancel() error {
@@ -317,8 +370,14 @@ func (r *JobRunner) Cancel() error {
 		return nil
 	}
 
-	r.logger.Info("Canceling job %s with a grace period of %ds",
-		r.job.ID, r.conf.AgentConfiguration.CancelGracePeriod)
+	reason := ""
+	if r.stopped {
+		reason = " (agent stopping)"
+	}
+	r.logger.Info("Canceling job %s with a grace period of %ds%s",
+		r.job.ID, r.conf.AgentConfiguration.CancelGracePeriod, reason)
+
+	r.cancelled = true
 
 	// First we interrupt the process (ctrl-c or SIGINT)
 	if err := r.process.Interrupt(); err != nil {
@@ -422,6 +481,7 @@ func (r *JobRunner) createEnvironment() ([]string, error) {
 
 	// Add agent environment variables
 	env["BUILDKITE_AGENT_DEBUG"] = fmt.Sprintf("%t", r.conf.Debug)
+	env["BUILDKITE_AGENT_DEBUG_HTTP"] = fmt.Sprintf("%t", r.conf.DebugHTTP)
 	env["BUILDKITE_AGENT_PID"] = fmt.Sprintf("%d", os.Getpid())
 
 	// We know the BUILDKITE_BIN_PATH dir, because it's the path to the
@@ -455,7 +515,6 @@ func (r *JobRunner) createEnvironment() ([]string, error) {
 	}
 
 	enablePluginValidation := r.conf.AgentConfiguration.PluginValidation
-
 	// Allow BUILDKITE_PLUGIN_VALIDATION to be enabled from env for easier
 	// per-pipeline testing
 	if pluginValidation, ok := env["BUILDKITE_PLUGIN_VALIDATION"]; ok {
@@ -464,8 +523,17 @@ func (r *JobRunner) createEnvironment() ([]string, error) {
 			enablePluginValidation = true
 		}
 	}
-
 	env["BUILDKITE_PLUGIN_VALIDATION"] = fmt.Sprintf("%t", enablePluginValidation)
+
+	if r.conf.AgentConfiguration.TracingBackend != "" {
+		env["BUILDKITE_TRACING_BACKEND"] = r.conf.AgentConfiguration.TracingBackend
+	}
+
+	// see documentation for BuildkiteMessageMax
+	if err := truncateEnv(r.logger, env, BuildkiteMessageName, BuildkiteMessageMax); err != nil {
+		r.logger.Warn("failed to truncate %s: %v", BuildkiteMessageName, err)
+		// attempt to continue anyway
+	}
 
 	// Convert the env map into a slice (which is what the script gear
 	// needs)
@@ -475,6 +543,25 @@ func (r *JobRunner) createEnvironment() ([]string, error) {
 	}
 
 	return envSlice, nil
+}
+
+// truncateEnv cuts environment variable `key` down to `max` length, such that
+// "key=value\0" does not exceed the max.
+func truncateEnv(l logger.Logger, env map[string]string, key string, max int) error {
+	msglen := len(env[key])
+	if msglen <= max {
+		return nil
+	}
+	msgmax := max - len(key) - 2 // two bytes for "=" and null terminator
+	description := fmt.Sprintf("value truncated %d -> %d bytes", msglen, msgmax)
+	apology := fmt.Sprintf("[%s]", description)
+	if len(apology) > msgmax {
+		return fmt.Errorf("max=%d too short to include truncation apology", max)
+	}
+	keeplen := msgmax - len(apology)
+	env[key] = env[key][0:keeplen] + apology
+	l.Warn("%s %s", key, description)
+	return nil
 }
 
 // Starts the job in the Buildkite Agent API. We'll retry on connection-related
@@ -502,10 +589,15 @@ func (r *JobRunner) startJob(startedAt time.Time) error {
 
 // Finishes the job in the Buildkite Agent API. This call will keep on retrying
 // forever until it finally gets a successfull response from the API.
-func (r *JobRunner) finishJob(finishedAt time.Time, exitStatus string, failedChunkCount int) error {
+func (r *JobRunner) finishJob(finishedAt time.Time, exitStatus string, signal string, signalReason string, failedChunkCount int) error {
 	r.job.FinishedAt = finishedAt.UTC().Format(time.RFC3339Nano)
 	r.job.ExitStatus = exitStatus
+	r.job.Signal = signal
+	r.job.SignalReason = signalReason
 	r.job.ChunksFailedCount = failedChunkCount
+
+	r.logger.Debug("[JobRunner] Finishing job with exit_status=%s, signal=%s and signal_reason=%s",
+		r.job.ExitStatus, r.job.Signal, r.job.SignalReason)
 
 	return retry.Do(func(s *retry.Stats) error {
 		response, err := r.apiClient.FinishJob(r.job)
@@ -572,15 +664,17 @@ func (r *JobRunner) onProcessStartCallback() {
 			r.logger.Debug("[JobRunner] Routine that refreshes the job has finished")
 		}()
 		for {
-			// Re-get the job and check it's status to see if it's been
-			// cancelled
+			// Re-get the job and check its status to see if it's been cancelled
 			jobState, _, err := r.apiClient.GetJobState(r.job.ID)
 			if err != nil {
 				// We don't really care if it fails, we'll just
 				// try again soon anyway
 				r.logger.Warn("Problem with getting job state %s (%s)", r.job.ID, err)
 			} else if jobState.State == "canceling" || jobState.State == "canceled" {
-				r.Cancel()
+				err = r.Cancel()
+				if err != nil {
+					r.logger.Error("Unexpected error canceling process as requested by server (job: %s) (err: %s)", r.job.ID, err)
+				}
 			}
 
 			// Sleep for a bit, or until the job is finished

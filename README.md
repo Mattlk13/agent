@@ -26,9 +26,15 @@ Available commands are:
 Use "buildkite-agent <command> --help" for more information about a command.
 ```
 
+## Dependencies
+
+The agent is fairly portable and should run out of the box on most supported platforms without extras. On Linux hosts it requires `dbus`.
+
 ## Installing
 
-The agents page on Buildkite has personalised instructions for installing the agent with Ubuntu (via apt), Debian (via apt), macOS (via homebrew), Windows and Linux. You can also run the agent [via Docker](https://hub.docker.com/r/buildkite/agent).
+[The agents page](https://buildkite.com/organizations/-/agents) on Buildkite has personalised instructions, or you can refer to [the Buildkite docs](https://buildkite.com/docs/agent/v3/installation). Both cover installing the agent with Ubuntu (via apt), Debian (via apt), macOS (via homebrew), Windows and Linux.
+
+You can also run the agent [via Docker](https://hub.docker.com/r/buildkite/agent).
 
 ## Starting
 
@@ -63,7 +69,7 @@ go run *.go start --debug --build-path=/tmp/buildkite-builds --token "abc"
 
 ### Dependency management
 
-We're using Go 1.13+ and [Go Modules](https://github.com/golang/go/wiki/Modules) to manage our Go dependencies. We are keeping the dependencies vendored to remain backwards compatible with older go versions.
+We're using Go 1.14+ and [Go Modules](https://github.com/golang/go/wiki/Modules) to manage our Go dependencies.
 
 If you are using Go 1.11+ and have the agent in your `GOPATH`, you will need to enable modules via the environment variable:
 
@@ -71,17 +77,7 @@ If you are using Go 1.11+ and have the agent in your `GOPATH`, you will need to 
 export GO111MODULE=on
 ```
 
-If you introduce a new package:
-
-```bash
-go get github.com/my/new/package
-```
-
-Then you can write that package to the `vendor/` with:
-
-```bash
-go mod vendor
-```
+Dependencies are no longer committed to the repository, so compiling on Go <= 1.10 is not supported.
 
 ## Contributing
 

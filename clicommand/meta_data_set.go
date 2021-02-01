@@ -13,7 +13,7 @@ import (
 
 var MetaDataSetHelpDescription = `Usage:
 
-   buildkite-agent meta-data set <key> [<value>] [arguments...]
+   buildkite-agent meta-data set <key> [value] [arguments...]
 
 Description:
 
@@ -34,9 +34,10 @@ type MetaDataSetConfig struct {
 	Job   string `cli:"job" validate:"required"`
 
 	// Global flags
-	Debug   bool   `cli:"debug"`
-	NoColor bool   `cli:"no-color"`
-	Profile string `cli:"profile"`
+	Debug   bool         `cli:"debug"`
+	NoColor bool         `cli:"no-color"`
+	Experiments []string `cli:"experiment" normalize:"list"`
+	Profile string       `cli:"profile"`
 
 	// API config
 	DebugHTTP        bool   `cli:"debug-http"`
@@ -53,7 +54,7 @@ var MetaDataSetCommand = cli.Command{
 		cli.StringFlag{
 			Name:   "job",
 			Value:  "",
-			Usage:  "Which job should the meta-data be set on",
+			Usage:  "Which job's build should the meta-data be set on",
 			EnvVar: "BUILDKITE_JOB_ID",
 		},
 
@@ -66,6 +67,7 @@ var MetaDataSetCommand = cli.Command{
 		// Global flags
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
 	},
 	Action: func(c *cli.Context) {

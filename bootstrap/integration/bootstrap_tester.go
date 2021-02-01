@@ -19,7 +19,7 @@ import (
 
 	"github.com/buildkite/agent/v3/experiments"
 
-	"github.com/buildkite/bintest"
+	"github.com/buildkite/bintest/v3"
 )
 
 // BootstrapTester invokes a buildkite-agent bootstrap script with a temporary environment
@@ -284,9 +284,7 @@ func (b *BootstrapTester) Cancel() error {
 
 func (b *BootstrapTester) CheckMocks(t *testing.T) {
 	for _, mock := range b.mocks {
-		if !mock.Check(t) {
-			return
-		}
+		mock.Check(t)
 	}
 }
 

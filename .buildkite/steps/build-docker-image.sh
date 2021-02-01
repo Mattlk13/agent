@@ -3,7 +3,7 @@ set -euo pipefail
 
 ## This script can be run locally like this:
 ##
-## .buildkite/steps/build-docker-image.sh (alpine|ubuntu) (image tag) (codename) (version)
+## .buildkite/steps/build-docker-image.sh (alpine|ubuntu|centos) (image tag) (codename) (version)
 ## e.g: .buildkite/steps/build-docker-image.sh alpine buildkiteci/agent:lox-manual-build stable 3.1.1
 ##
 ## You can then publish that image with
@@ -45,7 +45,7 @@ test_docker_image() {
 push_docker_image() {
   local image_tag="$1"
   echo "--- Pushing :docker: image to $image_tag"
-  dry_run docker push "$image_tag"
+  docker push "$image_tag"
 }
 
 variant="${1:-}"
@@ -54,7 +54,7 @@ codename="${3:-}"
 version="${4:-}"
 push="${PUSH_IMAGE:-true}"
 
-if [[ ! "$variant" =~ ^(alpine|ubuntu)$ ]] ; then
+if [[ ! "$variant" =~ ^(alpine|ubuntu|centos|sidecar)$ ]] ; then
   echo "Unknown docker variant $variant"
   exit 1
 fi
@@ -89,13 +89,26 @@ alpine)
 ubuntu)
   build_docker_image "$image_tag" "packaging/docker/ubuntu-linux"
   ;;
+centos)
+  build_docker_image "$image_tag" "packaging/docker/centos-linux"
+  ;;
+sidecar)
+  build_docker_image "$image_tag" "packaging/docker/sidecar"
+  ;;
 *)
   echo "Unknown variant $variant"
   exit 1
   ;;
 esac
 
-test_docker_image "$image_tag"
+case $variant in
+sidecar)
+  echo "Skipping tests for sidecar variant"
+  ;;
+*)
+  test_docker_image "$image_tag"
+  ;;
+esac
 
 if [[ $push == "true" ]] ; then
   push_docker_image "$image_tag"

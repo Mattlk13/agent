@@ -37,9 +37,10 @@ type StepGetConfig struct {
 	Format    string `cli:"format"`
 
 	// Global flags
-	Debug   bool   `cli:"debug"`
-	NoColor bool   `cli:"no-color"`
-	Profile string `cli:"profile"`
+	Debug   bool         `cli:"debug"`
+	NoColor bool         `cli:"no-color"`
+	Experiments []string `cli:"experiment" normalize:"list"`
+	Profile string       `cli:"profile"`
 
 	// API config
 	DebugHTTP        bool   `cli:"debug-http"`
@@ -56,13 +57,13 @@ var StepGetCommand = cli.Command{
 		cli.StringFlag{
 			Name:   "step",
 			Value:  "",
-			Usage:  "The step to get. Can be either it's ID (BUILDKITE_STEP_ID) or key (BUILDKITE_STEP_KEY)",
+			Usage:  "The step to get. Can be either its ID (BUILDKITE_STEP_ID) or key (BUILDKITE_STEP_KEY)",
 			EnvVar: "BUILDKITE_STEP_ID",
 		},
 		cli.StringFlag{
 			Name:   "build",
 			Value:  "",
-			Usage:  "The build to look for the step in. Only required when targeting a step using it's key (BUILDKITE_STEP_KEY)",
+			Usage:  "The build to look for the step in. Only required when targeting a step using its key (BUILDKITE_STEP_KEY)",
 			EnvVar: "BUILDKITE_BUILD_ID",
 		},
 		cli.StringFlag{
@@ -81,6 +82,7 @@ var StepGetCommand = cli.Command{
 		// Global flags
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
 	},
 	Action: func(c *cli.Context) {

@@ -26,6 +26,8 @@ if [ "$BUILD_ARCH" == "amd64" ]; then
   ARCH="x86_64"
 elif [ "$BUILD_ARCH" == "386" ]; then
   ARCH="i386"
+elif [ "$BUILD_ARCH" == "arm64" ]; then
+  ARCH="aarch64"
 else
   echo "Unknown architecture: $BUILD_ARCH"
   exit 1
@@ -37,6 +39,11 @@ PACKAGE_NAME="${NAME}_${VERSION}-${REVISION}_${ARCH}.rpm"
 PACKAGE_PATH="${DESTINATION_PATH}/${PACKAGE_NAME}"
 
 mkdir -p "$DESTINATION_PATH"
+
+info "Installing dependencies"
+
+bundle check || bundle
+which rpmbuild || (apt update && apt install -y rpm)
 
 info "Building rpm package $PACKAGE_NAME to $DESTINATION_PATH"
 

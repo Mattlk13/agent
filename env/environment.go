@@ -63,7 +63,7 @@ func (e *Environment) Set(key string, value string) string {
 	return value
 }
 
-// Remove a key from the Environment and return it's value
+// Remove a key from the Environment and return its value
 func (e *Environment) Remove(key string) string {
 	value, ok := e.Get(key)
 	if ok {
@@ -77,16 +77,15 @@ func (e *Environment) Length() int {
 	return len(e.env)
 }
 
-// Diff returns a new environment with all the variables that have changed
+// Diff returns a new environment with the keys and values from this
+// environment which are different in the other one.
 func (e *Environment) Diff(other *Environment) *Environment {
 	diff := &Environment{env: make(map[string]string)}
-
 	for k, v := range e.env {
-		if other, _ := other.Get(k); other != v {
+		if other, ok := other.Get(k); !ok || other != v {
 			diff.Set(k, v)
 		}
 	}
-
 	return diff
 }
 

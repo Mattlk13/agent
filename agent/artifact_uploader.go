@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/buildkite/agent/v3/api"
+	"github.com/buildkite/agent/v3/experiments"
 	"github.com/buildkite/agent/v3/logger"
 	"github.com/buildkite/agent/v3/mime"
 	"github.com/buildkite/agent/v3/pool"
@@ -40,6 +41,9 @@ type ArtifactUploaderConfig struct {
 
 	// Whether to show HTTP debugging
 	DebugHTTP bool
+
+	// Whether to follow symbolic links when resolving globs
+	FollowSymlinks bool
 }
 
 type ArtifactUploader struct {
@@ -96,6 +100,9 @@ func (a *ArtifactUploader) Collect() (artifacts []*api.Artifact, err error) {
 		return nil, err
 	}
 
+	// file paths are deduplicated after resolving globs etc
+	seenPaths := make(map[string]bool)
+
 	for _, globPath := range strings.Split(a.conf.Paths, ArtifactPathDelimiter) {
 		globPath = strings.TrimSpace(globPath)
 		if globPath == "" {
@@ -106,7 +113,12 @@ func (a *ArtifactUploader) Collect() (artifacts []*api.Artifact, err error) {
 
 		// Resolve the globs (with * and ** in them), if it's a non-globbed path and doesn't exists
 		// then we will get the ErrNotExist that is handled below
-		files, err := zglob.Glob(globPath)
+		globfunc := zglob.Glob
+		if a.conf.FollowSymlinks {
+			// Follow symbolic links for files & directories while expanding globs
+			globfunc = zglob.GlobFollowSymlinks
+		}
+		files, err := globfunc(globPath)
 		if err == os.ErrNotExist {
 			a.logger.Info("File not found: %s", globPath)
 			continue
@@ -120,6 +132,13 @@ func (a *ArtifactUploader) Collect() (artifacts []*api.Artifact, err error) {
 			if err != nil {
 				return nil, err
 			}
+
+			// dedupe based on resolved absolutePath
+			if _, ok := seenPaths[absolutePath]; ok {
+				a.logger.Debug("Skipping duplicate path %s", file)
+				continue
+			}
+			seenPaths[absolutePath] = true
 
 			// Ignore directories, we only want files
 			if isDir(absolutePath) {
@@ -145,6 +164,11 @@ func (a *ArtifactUploader) Collect() (artifacts []*api.Artifact, err error) {
 				return nil, err
 			}
 
+			if experiments.IsEnabled(`normalised-upload-paths`) {
+				// Convert any Windows paths to Unix/URI form
+				path = filepath.ToSlash(path)
+			}
+
 			// Build an artifact object using the paths we have.
 			artifact, err := a.build(path, absolutePath, globPath)
 			if err != nil {
@@ -159,14 +183,14 @@ func (a *ArtifactUploader) Collect() (artifacts []*api.Artifact, err error) {
 }
 
 func (a *ArtifactUploader) build(path string, absolutePath string, globPath string) (*api.Artifact, error) {
-	// Temporarily open the file to get it's size
+	// Temporarily open the file to get its size
 	file, err := os.Open(absolutePath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	// Grab it's file info (which includes it's file size)
+	// Grab its file info (which includes its file size)
 	fileInfo, err := file.Stat()
 	if err != nil {
 		return nil, err
@@ -237,7 +261,7 @@ func (a *ArtifactUploader) upload(artifacts []*api.Artifact) error {
 		return fmt.Errorf("Error creating uploader: %v", err)
 	}
 
-	// Set the URL's of the artifacts based on the uploader
+	// Set the URLs of the artifacts based on the uploader
 	for _, artifact := range artifacts {
 		artifact.URL = uploader.URL(artifact)
 	}
@@ -315,7 +339,7 @@ func (a *ArtifactUploader) upload(artifacts []*api.Artifact) error {
 					errorsMutex.Unlock()
 				}
 
-				a.logger.Debug("Uploaded %d artfact states (%d/%d)", len(statesToUpload), artifactStatesUploaded, len(artifacts))
+				a.logger.Debug("Uploaded %d artifact states (%d/%d)", len(statesToUpload), artifactStatesUploaded, len(artifacts))
 			}
 
 			// Check again for states to upload in a few seconds
@@ -353,14 +377,15 @@ func (a *ArtifactUploader) upload(artifacts []*api.Artifact) error {
 				a.logger.Error("Error uploading artifact \"%s\": %s", artifact.Path, err)
 
 				// Track the error that was raised. We need to
-				// aquire a lock since we mutate the errors
-				// slice in mutliple routines.
+				// acquire a lock since we mutate the errors
+				// slice in multiple routines.
 				errorsMutex.Lock()
 				errors = append(errors, err)
 				errorsMutex.Unlock()
 
 				state = "error"
 			} else {
+				a.logger.Info("Successfully uploaded artifact \"%s\"", artifact.Path)
 				state = "finished"
 			}
 
@@ -373,8 +398,12 @@ func (a *ArtifactUploader) upload(artifacts []*api.Artifact) error {
 		})
 	}
 
+	a.logger.Debug("Waiting for uploads to complete...")
+
 	// Wait for the pool to finish
 	p.Wait()
+
+	a.logger.Debug("Uploads complete, waiting for upload status to be sent to buildkite...")
 
 	// Wait for the statuses to finish uploading
 	stateUploaderWaitGroup.Wait()
@@ -382,6 +411,8 @@ func (a *ArtifactUploader) upload(artifacts []*api.Artifact) error {
 	if len(errors) > 0 {
 		return fmt.Errorf("There were errors with uploading some of the artifacts")
 	}
+
+	a.logger.Info("Artifact uploads completed succesfully")
 
 	return nil
 }

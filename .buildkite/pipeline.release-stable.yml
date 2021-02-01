@@ -12,6 +12,13 @@ steps:
       CODENAME: "stable"
     agents:
       queue: "deploy"
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "032379705303"
+      - docker#v3.5.0:
+          image: "032379705303.dkr.ecr.us-east-1.amazonaws.com/deploytools:2020.03"
+          propagate-environment: true
 
   - name: ":octocat: :rocket:"
     command: ".buildkite/steps/github-release.sh"
@@ -19,20 +26,47 @@ steps:
       CODENAME: "stable"
     agents:
       queue: "deploy"
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "032379705303"
+      - docker#v3.5.0:
+          image: "032379705303.dkr.ecr.us-east-1.amazonaws.com/deploytools:2020.03"
+          propagate-environment: true
 
   - name: ":redhat:"
     command: ".buildkite/steps/publish-rpm-package.sh"
     env:
       CODENAME: "stable"
+      RPM_S3_BUCKET: "yum.buildkite.com"
     agents:
       queue: "deploy"
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "032379705303"
+      - docker#v3.5.0:
+          image: "032379705303.dkr.ecr.us-east-1.amazonaws.com/deploytools:2020.03"
+          propagate-environment: true
+          volumes:
+            - "/yum.buildkite.com"
 
   - name: ":debian:"
     command: ".buildkite/steps/publish-debian-package.sh"
     env:
       CODENAME: "stable"
+      DEB_S3_BUCKET: "apt.buildkite.com/buildkite-agent"
     agents:
       queue: "deploy"
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "032379705303"
+      - docker#v3.5.0:
+          image: "032379705303.dkr.ecr.us-east-1.amazonaws.com/deploytools:2020.03"
+          propagate-environment: true
+          tmpfs:
+            - "/root/.gnupg"
 
   - name: ":docker:"
     command: ".buildkite/steps/publish-docker-images.sh"
@@ -40,6 +74,10 @@ steps:
       CODENAME: "stable"
     agents:
       queue: "deploy"
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "445615400570"
 
   - wait
 
@@ -50,4 +88,10 @@ steps:
       CODENAME: "stable"
     agents:
       queue: "deploy"
-
+    plugins:
+      - ecr#v2.0.0:
+          login: true
+          account-ids: "032379705303"
+      - docker#v3.5.0:
+          image: "032379705303.dkr.ecr.us-east-1.amazonaws.com/deploytools:2020.03"
+          propagate-environment: true

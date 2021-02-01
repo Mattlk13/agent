@@ -9,7 +9,7 @@ import (
 
 var UploadHelpDescription = `Usage:
 
-   buildkite-agent artifact upload <pattern> <destination> [arguments...]
+   buildkite-agent artifact upload [options] <pattern> [destination]
 
 Description:
 
@@ -18,6 +18,12 @@ Description:
    You need to ensure that the paths are surrounded by quotes otherwise the
    built-in shell path globbing will provide the files, which is currently not
    supported.
+
+   You can specify an alternate destination on Amazon S3, Google Cloud Storage
+   or Artifactory as per the examples below. This may be specified in the
+   'destination' argument, or in the 'BUILDKITE_ARTIFACT_UPLOAD_DESTINATION'
+   environment variable.  Otherwise, artifacts are uploaded to a
+   Buildkite-managed Amazon S3 bucket.
 
 Example:
 
@@ -31,6 +37,10 @@ Example:
    $ export BUILDKITE_S3_ACL=private # default is public-read
    $ buildkite-agent artifact upload "log/**/*.log" s3://name-of-your-s3-bucket/$BUILDKITE_JOB_ID
 
+   You can use Amazon IAM assumed roles by specifying the session token:
+
+   $ export BUILDKITE_S3_SESSION_TOKEN=zzz
+
    Or upload directly to Google Cloud Storage:
 
    $ export BUILDKITE_GS_ACL=private
@@ -43,6 +53,12 @@ Example:
    $ export BUILDKITE_ARTIFACTORY_PASSWORD=xxx
    $ buildkite-agent artifact upload "log/**/*.log" rt://name-of-your-artifactory-repo/$BUILDKITE_JOB_ID`
 
+var FollowSymlinksFlag = cli.BoolFlag{
+	Name:   "follow-symlinks",
+	Usage:  "Follow symbolic links while resolving globs",
+	EnvVar: "BUILDKITE_AGENT_ARTIFACT_SYMLINKS",
+}
+
 type ArtifactUploadConfig struct {
 	UploadPaths string `cli:"arg:0" label:"upload paths" validate:"required"`
 	Destination string `cli:"arg:1" label:"destination" env:"BUILDKITE_ARTIFACT_UPLOAD_DESTINATION"`
@@ -50,15 +66,19 @@ type ArtifactUploadConfig struct {
 	ContentType string `cli:"content-type"`
 
 	// Global flags
-	Debug   bool   `cli:"debug"`
-	NoColor bool   `cli:"no-color"`
-	Profile string `cli:"profile"`
+	Debug       bool     `cli:"debug"`
+	NoColor     bool     `cli:"no-color"`
+	Experiments []string `cli:"experiment" normalize:"list"`
+	Profile     string   `cli:"profile"`
 
 	// API config
 	DebugHTTP        bool   `cli:"debug-http"`
 	AgentAccessToken string `cli:"agent-access-token" validate:"required"`
 	Endpoint         string `cli:"endpoint" validate:"required"`
 	NoHTTP2          bool   `cli:"no-http2"`
+
+	// Uploader flags
+	FollowSymlinks bool `cli:"follow-symlinks"`
 }
 
 var ArtifactUploadCommand = cli.Command{
@@ -88,7 +108,9 @@ var ArtifactUploadCommand = cli.Command{
 		// Global flags
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
+		FollowSymlinksFlag,
 	},
 	Action: func(c *cli.Context) {
 		// The configuration will be loaded into this struct
@@ -110,11 +132,12 @@ var ArtifactUploadCommand = cli.Command{
 
 		// Setup the uploader
 		uploader := agent.NewArtifactUploader(l, client, agent.ArtifactUploaderConfig{
-			JobID:       cfg.Job,
-			Paths:       cfg.UploadPaths,
-			Destination: cfg.Destination,
-			ContentType: cfg.ContentType,
-			DebugHTTP:   cfg.DebugHTTP,
+			JobID:          cfg.Job,
+			Paths:          cfg.UploadPaths,
+			Destination:    cfg.Destination,
+			ContentType:    cfg.ContentType,
+			DebugHTTP:      cfg.DebugHTTP,
+			FollowSymlinks: cfg.FollowSymlinks,
 		})
 
 		// Upload the artifacts

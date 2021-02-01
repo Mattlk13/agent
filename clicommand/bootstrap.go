@@ -54,6 +54,7 @@ type BootstrapConfig struct {
 	GitSubmodules                bool     `cli:"git-submodules"`
 	SSHKeyscan                   bool     `cli:"ssh-keyscan"`
 	AgentName                    string   `cli:"agent" validate:"required"`
+	Queue                        string   `cli:"queue"`
 	OrganizationSlug             string   `cli:"organization" validate:"required"`
 	PipelineSlug                 string   `cli:"pipeline" validate:"required"`
 	PipelineProvider             string   `cli:"pipeline-provider" validate:"required"`
@@ -81,6 +82,7 @@ type BootstrapConfig struct {
 	Phases                       []string `cli:"phases" normalize:"list"`
 	Profile                      string   `cli:"profile"`
 	RedactedVars                 []string `cli:"redacted-vars" normalize:"list"`
+	TracingBackend               string   `cli:"tracing-backend"`
 }
 
 var BootstrapCommand = cli.Command{
@@ -149,6 +151,12 @@ var BootstrapCommand = cli.Command{
 			EnvVar: "BUILDKITE_AGENT_NAME",
 		},
 		cli.StringFlag{
+			Name:   "queue",
+			Value:  "",
+			Usage:  "The name of the queue the agent belongs to, if tagged",
+			EnvVar: "BUILDKITE_AGENT_META_DATA_QUEUE",
+		},
+		cli.StringFlag{
 			Name:   "organization",
 			Value:  "",
 			Usage:  "The slug of the organization that the job is a part of",
@@ -191,7 +199,7 @@ var BootstrapCommand = cli.Command{
 		},
 		cli.StringFlag{
 			Name:   "git-clone-mirror-flags",
-			Value:  "-v --mirror",
+			Value:  "-v",
 			Usage:  "Flags to pass to \"git clone\" command when mirroring",
 			EnvVar: "BUILDKITE_GIT_CLONE_MIRROR_FLAGS",
 		},
@@ -245,7 +253,7 @@ var BootstrapCommand = cli.Command{
 		},
 		cli.BoolTFlag{
 			Name:   "command-eval",
-			Usage:  "Allow running of arbitary commands",
+			Usage:  "Allow running of arbitrary commands",
 			EnvVar: "BUILDKITE_COMMAND_EVAL",
 		},
 		cli.BoolTFlag{
@@ -286,13 +294,19 @@ var BootstrapCommand = cli.Command{
 		},
 		cli.StringSliceFlag{
 			Name:   "phases",
-			Usage:  "The specific phases to execute. The order they're defined is is irrelevant.",
+			Usage:  "The specific phases to execute. The order they're defined is irrelevant.",
 			EnvVar: "BUILDKITE_BOOTSTRAP_PHASES",
 		},
 		cli.StringSliceFlag{
 			Name:   "redacted-vars",
 			Usage:  "Pattern of environment variable names containing sensitive values",
 			EnvVar: "BUILDKITE_REDACTED_VARS",
+		},
+		cli.StringFlag{
+			Name:   "tracing-backend",
+			Usage:  "The name of the tracing backend to use.",
+			EnvVar: "BUILDKITE_TRACING_BACKEND",
+			Value:  "",
 		},
 		DebugFlag,
 		ExperimentsFlag,
@@ -356,6 +370,7 @@ var BootstrapCommand = cli.Command{
 			GitCloneMirrorFlags:          cfg.GitCloneMirrorFlags,
 			GitCleanFlags:                cfg.GitCleanFlags,
 			AgentName:                    cfg.AgentName,
+			Queue:                        cfg.Queue,
 			PipelineProvider:             cfg.PipelineProvider,
 			PipelineSlug:                 cfg.PipelineSlug,
 			OrganizationSlug:             cfg.OrganizationSlug,
@@ -378,6 +393,7 @@ var BootstrapCommand = cli.Command{
 			Shell:                        cfg.Shell,
 			Phases:                       cfg.Phases,
 			RedactedVars:                 cfg.RedactedVars,
+			TracingBackend:               cfg.TracingBackend,
 		})
 
 		ctx, cancel := context.WithCancel(context.Background())

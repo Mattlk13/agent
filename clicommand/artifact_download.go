@@ -9,11 +9,12 @@ import (
 
 var DownloadHelpDescription = `Usage:
 
-   buildkite-agent artifact download [arguments...]
+   buildkite-agent artifact download [options] <query> <destination>
 
 Description:
 
-   Downloads artifacts from Buildkite to the local machine.
+	 Downloads artifacts specified by <query> from Buildkite to <destination>
+	 directory on the local machine.
 
    Note: You need to ensure that your search query is surrounded by quotes if
    using a wild card as the built-in shell path globbing will provide files,
@@ -41,9 +42,10 @@ type ArtifactDownloadConfig struct {
 	IncludeRetriedJobs bool   `cli:"include-retried-jobs"`
 
 	// Global flags
-	Debug   bool   `cli:"debug"`
-	NoColor bool   `cli:"no-color"`
-	Profile string `cli:"profile"`
+	Debug   bool         `cli:"debug"`
+	NoColor bool         `cli:"no-color"`
+	Experiments []string `cli:"experiment" normalize:"list"`
+	Profile string       `cli:"profile"`
 
 	// API config
 	DebugHTTP        bool   `cli:"debug-http"`
@@ -60,7 +62,7 @@ var ArtifactDownloadCommand = cli.Command{
 		cli.StringFlag{
 			Name:  "step",
 			Value: "",
-			Usage: "Scope the search to a particular step by using either it's name or job ID",
+			Usage: "Scope the search to a particular step by using either its name or job ID",
 		},
 		cli.StringFlag{
 			Name:   "build",
@@ -83,6 +85,7 @@ var ArtifactDownloadCommand = cli.Command{
 		// Global flags
 		NoColorFlag,
 		DebugFlag,
+		ExperimentsFlag,
 		ProfileFlag,
 	},
 	Action: func(c *cli.Context) {
